@@ -1,0 +1,397 @@
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #000; }
+.wrap { background: #0a0a0a; color: #e0e0e0; font-family: sans-serif; padding: 20px; min-height: 600px; width: 75%; margin: 0 auto; }
+.tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+.tab { padding: 8px 22px; border-radius: 20px; border: 1.5px solid #444; background: transparent; color: #aaa; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+.tab.active { background: #222; border-color: #888; color: #fff; }
+.section { display: none; }
+.section.active { display: block; }
+.dashboard-heading { font-size: 22px; font-weight: 600; color: #e0e0e0; margin-bottom: 24px; text-align: center; letter-spacing: 0.5px; }
+.charts-row { display: flex; flex-direction: column; gap: 40px; }
+.chart-box { width: 100%; }
+.chart-box-bar { width: 60%; margin: 0 auto; }
+.chart-title { font-size: 13px; color: #888; margin-bottom: 10px; text-align: center; }
+canvas { display: block; }
+.legend { margin-top: 16px; }
+.legend-title { font-size: 11px; color: #666; margin-bottom: 8px; }
+.legend-items { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #999; cursor: default; }
+.legend-dot { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+.tooltip-box { position: fixed; background: #1a1a1a; border: 1px solid #444; border-radius: 6px; padding: 8px 12px; font-size: 12px; color: #eee; pointer-events: none; display: none; z-index: 999; }
+@media (max-width: 768px) {
+  .wrap { width: 100%; padding: 12px; }
+  .tabs { flex-wrap: wrap; }
+  .tab { padding: 6px 14px; font-size: 12px; }
+  .chart-title { font-size: 12px; }
+  .chart-box-bar { width: 100%; }
+  .legend-items { flex-direction: column; gap: 4px; }
+}
+</style>
+
+<div class="wrap">
+  <h1 class="dashboard-heading">Monthly Budget S.S.</h1>
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab(0)">Varianta 1 — 50 k</button>
+    <button class="tab" onclick="switchTab(1)">Varianta 2 — 40 k</button>
+  </div>
+  <div id="s0" class="section active">
+    <div class="charts-row">
+      <div class="chart-box">
+        <div class="chart-title">3D koláčový diagram — výdaje při 50 k</div>
+        <div style="position:relative;height:420px;"><canvas id="pie0"></canvas></div>
+      </div>
+      <div class="chart-box chart-box-bar">
+        <div class="chart-title">3D sloupcový diagram — výdaje při 50 k</div>
+        <div style="position:relative;height:320px;"><canvas id="bar0"></canvas></div>
+      </div>
+    </div>
+    <div class="legend" id="leg0"></div>
+  </div>
+  <div id="s1" class="section">
+    <div class="charts-row">
+      <div class="chart-box">
+        <div class="chart-title">3D koláčový diagram — výdaje při 40 k</div>
+        <div style="position:relative;height:420px;"><canvas id="pie1"></canvas></div>
+      </div>
+      <div class="chart-box chart-box-bar">
+        <div class="chart-title">3D sloupcový diagram — výdaje při 40 k</div>
+        <div style="position:relative;height:320px;"><canvas id="bar1"></canvas></div>
+      </div>
+    </div>
+    <div class="legend" id="leg1"></div>
+  </div>
+</div>
+<div class="tooltip-box" id="tip"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const rawData = [
+  { cat: "Jídlo",                    sub: "Nákup potravin, vietnamci, oběd/večeře, odměna",       v50: 10000, v40: 8000 },
+  { cat: "Nájem",                    sub: "Příspěvek na bydlení 15 %",                             v50: 4500,  v40: 4500 },
+  { cat: "Zdravotní pojištění",      sub: "Za rok 2026",                                           v50: 3024,  v40: 3024 },
+  { cat: "Splátky dluhů",            sub: "ČT, Odvody, Pokuty",                                    v50: 2000,  v40: 2000 },
+  { cat: "Investice",                sub: "Revolut Invest",                                        v50: 4000,  v40: 3200 },
+  { cat: "Lékárna",                  sub: "Léky na předpis, suplementy, čaje, byliny",             v50: 2000,  v40: 1600 },
+  { cat: "Drogerie",                 sub: "Čistící prostředky, kosmetika, hygienické potřeby",     v50: 1750,  v40: 1400 },
+  { cat: "Volnočasové útraty",       sub: "Večeře/drink s kamarádkou, pivo na zahrádce",           v50: 4500,  v40: 3600 },
+  { cat: "Rezerva nárazová",         sub: "Oblečení, boty, elektronika, hobby",                    v50: 1000,  v40: 800  },
+  { cat: "Doprava",                  sub: "Taxíky, parkování, lítačka",                            v50: 3550,  v40: 2840 },
+  { cat: "Péče o sebe",              sub: "Posilovna, kadeřnice, řasy",                            v50: 3100,  v40: 2800 },
+  { cat: "Rezerva jiné",             sub: "Jiné a nečekané výdaje",                                v50: 10576, v40: 6236 },
+];
+
+const COLORS = [
+  "#e05c5c","#e08c3a","#d4c030","#6abf5e","#4ab8b0","#5088d4","#8b65cc",
+  "#c85faf","#44aadd","#d47b7b","#6ecf8a","#b0b0b0"
+];
+
+function pct(val, arr) { const s = arr.reduce((a,b)=>a+b,0); return (val/s*100).toFixed(1)+'%'; }
+
+function makeLegend(id, labels, values, colors, subs) {
+  const el = document.getElementById(id);
+  el.innerHTML = '<div class="legend-title">Vysvětlivky — podrobné položky</div><div class="legend-items" id="li_'+id+'"></div>';
+  const c = document.getElementById('li_'+id);
+  labels.forEach((l,i) => {
+    c.innerHTML += `<div class="legend-item"><span class="legend-dot" style="background:${colors[i]}"></span><span style="color:${colors[i]};font-weight:500">${l}</span><span style="color:#666;font-size:10px;margin-left:2px">— ${subs[i]}</span></div>`;
+  });
+}
+
+function make3DPie(canvasId, labels, data, colors) {
+  const DEPTH = 28;           // cake thickness in px
+  const TILT = 0.55;          // Y-scale for ~45° perspective
+  const PULL = 16;            // how far hovered slice pulls out
+  const LERP_SPEED = 0.12;    // smooth transition speed (0–1)
+
+  // Per-slice animated state
+  const sliceState = data.map(() => ({ pull: 0, bright: 0 }));
+  let animFrame = null;
+
+  function shadeDarken(hex, amt) {
+    const c = parseInt(hex.slice(1),16);
+    const r = Math.max(0,((c>>16)&255)*amt)|0;
+    const g = Math.max(0,((c>>8)&255)*amt)|0;
+    const b = Math.max(0,(c&255)*amt)|0;
+    return `rgb(${r},${g},${b})`;
+  }
+
+  function boldenColor(hex, strength) {
+    // Increase saturation and vibrancy: boost the dominant channel, reduce others
+    const c = parseInt(hex.slice(1),16);
+    let r = (c>>16)&255, g = (c>>8)&255, b = c&255;
+    const max = Math.max(r,g,b);
+    const boost = 50 * strength;
+    r = max === r ? Math.min(255, r + boost) : Math.max(0, r - boost * 0.4);
+    g = max === g ? Math.min(255, g + boost) : Math.max(0, g - boost * 0.4);
+    b = max === b ? Math.min(255, b + boost) : Math.max(0, b - boost * 0.4);
+    return `rgb(${r|0},${g|0},${b|0})`;
+  }
+
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  const plugin = {
+    id: 'pie3d',
+    afterDraw(chart) {
+      const {ctx, chartArea:{left,top,right,bottom}} = chart;
+      const cx = (left+right)/2;
+      const areaH = bottom - top;
+      const cy = top + (areaH - DEPTH) / 2;
+      const rx = Math.min(right-left, (areaH - DEPTH) / TILT) / 2 * 0.82;
+      const ry = rx * TILT;
+      const meta = chart.getDatasetMeta(0);
+
+      function drawSector(ocx, ocy, startA, endA, dy, fillStyle) {
+        ctx.beginPath();
+        ctx.moveTo(ocx, ocy + dy);
+        ctx.ellipse(ocx, ocy + dy, rx, ry, 0, startA, endA);
+        ctx.lineTo(ocx, ocy + dy);
+        ctx.closePath();
+        ctx.fillStyle = fillStyle;
+        ctx.fill();
+      }
+
+      const slices = meta.data.map((arc, i) => {
+        const start = arc.startAngle, end = arc.endAngle;
+        const mid = (start + end) / 2;
+        const st = sliceState[i];
+        const pull = st.pull;
+        const bright = st.bright;
+        const col = bright > 0.01 ? boldenColor(colors[i % colors.length], bright) : colors[i % colors.length];
+        return { i, start, end, mid, pull, col, bright,
+          ox: Math.cos(mid) * pull,
+          oy: Math.sin(mid) * pull * TILT };
+      });
+
+      const backFirst = [...slices].sort((a,b) => Math.sin(a.mid) - Math.sin(b.mid));
+
+      // --- PASS 1: Draw sides ---
+      backFirst.forEach(({i, start, end, ox, oy, col}) => {
+        const dark = shadeDarken(col, 0.35);
+        ctx.beginPath();
+        ctx.ellipse(cx + ox, cy + oy, rx, ry, 0, start, end);
+        ctx.lineTo(cx + ox + rx*Math.cos(end), cy + oy + ry*Math.sin(end) + DEPTH);
+        ctx.ellipse(cx + ox, cy + oy + DEPTH, rx, ry, 0, end, start, true);
+        ctx.closePath();
+        ctx.fillStyle = dark;
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+      });
+
+      // --- PASS 2: Draw bottom face ---
+      backFirst.forEach(({i, start, end, ox, oy, col}) => {
+        drawSector(cx + ox, cy + oy, start, end, DEPTH, shadeDarken(col, 0.3));
+      });
+
+      // --- PASS 3: Draw top face ---
+      slices.forEach(({i, start, end, mid, ox, oy, col, bright}) => {
+        drawSector(cx + ox, cy + oy, start, end, 0, col);
+        ctx.beginPath();
+        ctx.moveTo(cx + ox, cy + oy);
+        ctx.ellipse(cx + ox, cy + oy, rx, ry, 0, start, end);
+        ctx.closePath();
+        ctx.strokeStyle = '#111';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // highlight on top face
+        const highlightAlpha = 0.08 + bright * 0.06;
+        const grad = ctx.createRadialGradient(cx+ox, cy+oy - ry*0.3, 0, cx+ox, cy+oy, rx);
+        grad.addColorStop(0, `rgba(255,255,255,${highlightAlpha})`);
+        grad.addColorStop(1, 'rgba(255,255,255,0)');
+        drawSector(cx + ox, cy + oy, start, end, 0, grad);
+
+        // Labels
+        const labelR = rx * 0.6;
+        const lx = cx + ox + Math.cos(mid) * labelR;
+        const ly = cy + oy + Math.sin(mid) * labelR * TILT;
+        const span = end - start;
+        if (span > 0.22) {
+          ctx.fillStyle = '#fff';
+          ctx.font = bright > 0.5 ? 'bold 12px sans-serif' : '10px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.shadowColor = 'rgba(0,0,0,0.7)';
+          ctx.shadowBlur = 3;
+          ctx.fillText(labels[i], lx, ly);
+          ctx.shadowBlur = 0;
+        }
+      });
+    }
+  };
+
+  function animateSlices(chart) {
+    let needsUpdate = false;
+    sliceState.forEach((st, i) => {
+      const targetPull = chart._hoveredIdx === i ? PULL : 0;
+      const targetBright = chart._hoveredIdx === i ? 1 : 0;
+      if (Math.abs(st.pull - targetPull) > 0.3 || Math.abs(st.bright - targetBright) > 0.01) {
+        st.pull = lerp(st.pull, targetPull, LERP_SPEED);
+        st.bright = lerp(st.bright, targetBright, LERP_SPEED);
+        needsUpdate = true;
+      } else {
+        st.pull = targetPull;
+        st.bright = targetBright;
+      }
+    });
+    if (needsUpdate) {
+      chart.draw();
+      animFrame = requestAnimationFrame(() => animateSlices(chart));
+    } else {
+      animFrame = null;
+    }
+  }
+
+  function startAnim(chart) {
+    if (!animFrame) animFrame = requestAnimationFrame(() => animateSlices(chart));
+  }
+
+  const chart = new Chart(document.getElementById(canvasId), {
+    type: 'pie',
+    data: {
+      labels, datasets: [{
+        data, backgroundColor: 'transparent', borderColor: 'transparent', borderWidth: 0,
+        hoverOffset: 0
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { animateRotate: true, duration: 900 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          enabled: false,
+          external(context) {
+            const tip = document.getElementById('tip');
+            if(context.tooltip.opacity === 0) { tip.style.display='none'; return; }
+            const item = context.tooltip.dataPoints[0];
+            const total = data.reduce((a,b)=>a+b,0);
+            tip.innerHTML = `<b style="color:${colors[item.dataIndex]}">${item.label}</b><br>${item.raw.toLocaleString('cs-CZ')} Kč &nbsp;<span style="color:#888">(${(item.raw/total*100).toFixed(1)} %)</span>`;
+            tip.style.display = 'block';
+            tip.style.left = (context.chart.canvas.getBoundingClientRect().left + context.tooltip.caretX + 12) + 'px';
+            tip.style.top  = (context.chart.canvas.getBoundingClientRect().top  + context.tooltip.caretY - 10) + 'px';
+          }
+        }
+      }
+    },
+    plugins: [plugin]
+  });
+
+  document.getElementById(canvasId).addEventListener('mousemove', e => {
+    const pts = chart.getElementsAtEventForMode(e,'nearest',{intersect:true},false);
+    chart._hoveredIdx = pts.length ? pts[0].index : -1;
+    startAnim(chart);
+  });
+  document.getElementById(canvasId).addEventListener('mouseleave', () => {
+    chart._hoveredIdx = -1;
+    startAnim(chart);
+    document.getElementById('tip').style.display='none';
+  });
+  return chart;
+}
+
+function make3DBar(canvasId, labels, data, colors) {
+  const DEPTH = 10, SHIFT = 8;
+  const plugin3d = {
+    id: 'bar3d',
+    afterDraw(chart) {
+      const {ctx} = chart;
+      const meta = chart.getDatasetMeta(0);
+      meta.data.forEach((bar, i) => {
+        const {x, y, width, base} = bar;
+        const col = colors[i % colors.length];
+        const dark = darkenHex(col, 0.45);
+        const med  = darkenHex(col, 0.7);
+        const liftY = 0;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x - width/2, y + liftY);
+        ctx.lineTo(x - width/2 + SHIFT, y - DEPTH + liftY);
+        ctx.lineTo(x + width/2 + SHIFT, y - DEPTH + liftY);
+        ctx.lineTo(x + width/2, y + liftY);
+        ctx.closePath();
+        ctx.fillStyle = med; ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(x + width/2, y + liftY);
+        ctx.lineTo(x + width/2 + SHIFT, y - DEPTH + liftY);
+        ctx.lineTo(x + width/2 + SHIFT, base - DEPTH);
+        ctx.lineTo(x + width/2, base);
+        ctx.closePath();
+        ctx.fillStyle = dark; ctx.fill();
+        ctx.restore();
+      });
+    }
+  };
+  function darkenHex(hex, amt) {
+    let c = parseInt(hex.slice(1),16);
+    return `rgb(${(((c>>16)&255)*amt)|0},${(((c>>8)&255)*amt)|0},${((c&255)*amt)|0})`;
+  }
+  function boldenHex(hex) {
+    const c = parseInt(hex.slice(1),16);
+    let r = (c>>16)&255, g = (c>>8)&255, b = c&255;
+    const max = Math.max(r,g,b);
+    r = max===r ? Math.min(255,r+50) : Math.max(0,r-20);
+    g = max===g ? Math.min(255,g+50) : Math.max(0,g-20);
+    b = max===b ? Math.min(255,b+50) : Math.max(0,b-20);
+    return `rgb(${r},${g},${b})`;
+  }
+  const chart = new Chart(document.getElementById(canvasId), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data, backgroundColor: colors, borderColor: '#111', borderWidth: 1,
+        hoverBackgroundColor: colors.map(c => boldenHex(c)),
+        borderSkipped: false
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          enabled: false,
+          external(context) {
+            const tip = document.getElementById('tip');
+            if(context.tooltip.opacity === 0) { tip.style.display='none'; return; }
+            const item = context.tooltip.dataPoints[0];
+            const total = data.reduce((a,b)=>a+b,0);
+            tip.innerHTML = `<b style="color:${colors[item.dataIndex]}">${item.label}</b><br>${item.raw.toLocaleString('cs-CZ')} Kč &nbsp;<span style="color:#888">(${(item.raw/total*100).toFixed(1)} %)</span>`;
+            tip.style.display='block';
+            tip.style.left=(context.chart.canvas.getBoundingClientRect().left+context.tooltip.caretX+12)+'px';
+            tip.style.top=(context.chart.canvas.getBoundingClientRect().top+context.tooltip.caretY-10)+'px';
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color:'#888', font:{size:10}, maxRotation:35 }, grid:{color:'#1e1e1e'} },
+        y: { ticks: { color:'#888', font:{size:10}, callback: v => v.toLocaleString('cs-CZ') }, grid:{color:'#1e1e1e'} }
+      }
+    },
+    plugins: [plugin3d]
+  });
+  document.getElementById(canvasId).addEventListener('mouseleave', () => {
+    document.getElementById('tip').style.display='none';
+  });
+  return chart;
+}
+
+const labels = rawData.map(d=>d.cat);
+const subs   = rawData.map(d=>d.sub);
+const v50    = rawData.map(d=>d.v50);
+const v40    = rawData.map(d=>d.v40);
+
+make3DPie('pie0', labels, v50, COLORS);
+make3DBar('bar0', labels, v50, COLORS);
+makeLegend('leg0', labels, v50, COLORS, subs);
+make3DPie('pie1', labels, v40, COLORS);
+make3DBar('bar1', labels, v40, COLORS);
+makeLegend('leg1', labels, v40, COLORS, subs);
+
+function switchTab(n) {
+  document.querySelectorAll('.section').forEach((s,i)=>s.classList.toggle('active',i===n));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',i===n));
+}
+</script>
