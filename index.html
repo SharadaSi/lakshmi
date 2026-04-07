@@ -65,8 +65,19 @@ canvas { display: block; }
 </div>
 <div class="tooltip-box" id="tip"></div>
 
+<!-- Chart.js v4 — the charting library that handles the basic pie/bar
+     rendering. We draw our own 3D effects on top via custom plugins. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
+// =====================================================================
+//  DATA
+// =====================================================================
+// Each object represents one budget category.
+//   cat  = category name (shown in charts & legend)
+//   sub  = short description of what is included
+//   v50  = monthly amount in CZK when income is 50 000
+//   v40  = monthly amount in CZK when income is 40 000
+// ---------------------------------------------------------------------
 const rawData = [
   { cat: "Jídlo",                    sub: "Nákup potravin, vietnamci, oběd/večeře, odměna",       v50: 10000, v40: 8000 },
   { cat: "Nájem",                    sub: "Příspěvek na bydlení 15 %",                             v50: 4500,  v40: 4500 },
@@ -82,13 +93,29 @@ const rawData = [
   { cat: "Rezerva jiné",             sub: "Jiné a nečekané výdaje",                                v50: 10576, v40: 6236 },
 ];
 
+// One colour per category — order matches rawData.
+// These are used for pie slices, bar fills, and legend dots.
 const COLORS = [
   "#e05c5c","#e08c3a","#d4c030","#6abf5e","#4ab8b0","#5088d4","#8b65cc",
   "#c85faf","#44aadd","#d47b7b","#6ecf8a","#b0b0b0"
 ];
 
+// Utility: compute what percentage `val` is of the total of `arr`.
+// Returns a string like "12.3%".
 function pct(val, arr) { const s = arr.reduce((a,b)=>a+b,0); return (val/s*100).toFixed(1)+'%'; }
 
+// =====================================================================
+//  LEGEND BUILDER
+// =====================================================================
+// Populates the legend container below each chart pair.
+// Each legend row shows: coloured dot · category name · sub-description.
+// Parameters:
+//   id     — DOM id of the <div class="legend"> to fill
+//   labels — array of category names
+//   values — spending amounts (not used here, but kept for symmetry)
+//   colors — matching colour array
+//   subs   — array of sub-descriptions
+// ---------------------------------------------------------------------
 function makeLegend(id, labels, values, colors, subs) {
   const el = document.getElementById(id);
   el.innerHTML = '<div class="legend-title">Vysvětlivky — podrobné položky</div><div class="legend-items" id="li_'+id+'"></div>';
@@ -98,96 +125,164 @@ function makeLegend(id, labels, values, colors, subs) {
   });
 }
 
+// =====================================================================
+//  3D PIE CHART
+// =====================================================================
+// Creates a pie chart on the given <canvas> and draws a faux-3D
+// "cake" effect on top of it using a custom Chart.js plugin.
+//
+// How the 3D illusion works:
+//   • The pie is rendered as an ELLIPSE (squashed circle) so it
+//     looks tilted towards the viewer.
+//   • A "side wall" is drawn below each slice (DEPTH pixels tall)
+//     using a darker shade of the slice colour.
+//   • On hover a slice smoothly pulls outward and glows brighter.
+//
+// Parameters:
+//   canvasId — id of the <canvas> element to render into
+//   labels   — array of category names
+//   data     — array of numeric values (one per slice)
+//   colors   — array of hex colour strings
+// ---------------------------------------------------------------------
 function make3DPie(canvasId, labels, data, colors) {
-  const DEPTH = 28;           // cake thickness in px
-  const TILT = 0.55;          // Y-scale for ~45° perspective
-  const PULL = 16;            // how far hovered slice pulls out
-  const LERP_SPEED = 0.12;    // smooth transition speed (0–1)
+  // ── Tuneable constants ──────────────────────────────────────────
+  const DEPTH = 28;           // height of the 3D side wall in px
+  const TILT = 0.55;          // vertical squash factor (1 = circle, <1 = ellipse)
+  const PULL = 16;            // max pull-out distance when a slice is hovered
+  const LERP_SPEED = 0.12;    // interpolation speed for animations (0 = frozen, 1 = instant)
 
-  // Per-slice animated state
+  // Each slice has its own animated state:
+  //   pull   — current pull-out distance (0 → PULL)
+  //   bright — current glow intensity   (0 → 1)
+  // These are interpolated every frame towards the target (hovered or not).
   const sliceState = data.map(() => ({ pull: 0, bright: 0 }));
-  let animFrame = null;
+  let animFrame = null;       // handle for requestAnimationFrame (null = idle)
 
+  // ── Colour helpers ────────────────────────────────────────────
+
+  // Darken a hex colour by multiplying each RGB channel by `amt`
+  // (0 = black, 1 = original). Used for the "shadow" side walls.
   function shadeDarken(hex, amt) {
-    const c = parseInt(hex.slice(1),16);
-    const r = Math.max(0,((c>>16)&255)*amt)|0;
-    const g = Math.max(0,((c>>8)&255)*amt)|0;
-    const b = Math.max(0,(c&255)*amt)|0;
+    const c = parseInt(hex.slice(1),16);          // "#e05c5c" → integer
+    const r = Math.max(0,((c>>16)&255)*amt)|0;    // red   channel × amt
+    const g = Math.max(0,((c>>8)&255)*amt)|0;     // green channel × amt
+    const b = Math.max(0,(c&255)*amt)|0;           // blue  channel × amt
     return `rgb(${r},${g},${b})`;
   }
 
+  // Make a colour "pop" by boosting its dominant channel and
+  // dimming the others. `strength` goes from 0 (no change) to 1
+  // (full boost). Used for the hover glow effect.
   function boldenColor(hex, strength) {
-    // Increase saturation and vibrancy: boost the dominant channel, reduce others
     const c = parseInt(hex.slice(1),16);
     let r = (c>>16)&255, g = (c>>8)&255, b = c&255;
-    const max = Math.max(r,g,b);
+    const max = Math.max(r,g,b);       // which channel is dominant?
     const boost = 50 * strength;
+    // Boost the dominant channel, pull back the others
     r = max === r ? Math.min(255, r + boost) : Math.max(0, r - boost * 0.4);
     g = max === g ? Math.min(255, g + boost) : Math.max(0, g - boost * 0.4);
     b = max === b ? Math.min(255, b + boost) : Math.max(0, b - boost * 0.4);
     return `rgb(${r|0},${g|0},${b|0})`;
   }
 
+  // Linear interpolation: smoothly move `a` towards `b` by fraction `t`.
+  // e.g. lerp(0, 100, 0.1) = 10  — 10 % of the way from 0 to 100.
   function lerp(a, b, t) { return a + (b - a) * t; }
 
+  // ── Chart.js plugin: draws the 3D pie on every frame ─────────
+  // Chart.js calls afterDraw() after it finishes its own rendering.
+  // We clear / overdraw with our custom elliptical "cake".
   const plugin = {
     id: 'pie3d',
     afterDraw(chart) {
+      // ctx = the 2D drawing context of the <canvas>
+      // chartArea = the rectangle Chart.js allocated for the chart
       const {ctx, chartArea:{left,top,right,bottom}} = chart;
+
+      // Centre of the ellipse
       const cx = (left+right)/2;
       const areaH = bottom - top;
-      const cy = top + (areaH - DEPTH) / 2;
+      const cy = top + (areaH - DEPTH) / 2;   // shift up by half the depth
+
+      // Horizontal radius — pick the smaller of width and height so
+      // the cake fits; 0.82 adds a small margin.
       const rx = Math.min(right-left, (areaH - DEPTH) / TILT) / 2 * 0.82;
+      // Vertical radius — squashed by TILT to create the perspective look
       const ry = rx * TILT;
+
+      // meta.data is an array of Chart.js ArcElement objects — one per
+      // slice. Each has .startAngle and .endAngle in radians.
       const meta = chart.getDatasetMeta(0);
 
+      // Save the computed ellipse geometry on the chart instance
+      // so the mousemove handler (hitTestPie) can reuse it for
+      // accurate hover detection against the actual drawn shape.
+      chart._pieGeo = { cx, cy, rx, ry };
+
+      // Draw one pie-shaped wedge on an ellipse.
+      //   ocx, ocy = offset centre (shifted when a slice is pulled out)
+      //   dy       = vertical offset (0 for top face, DEPTH for bottom)
+      //   fillStyle = colour or gradient to fill with
       function drawSector(ocx, ocy, startA, endA, dy, fillStyle) {
         ctx.beginPath();
-        ctx.moveTo(ocx, ocy + dy);
-        ctx.ellipse(ocx, ocy + dy, rx, ry, 0, startA, endA);
-        ctx.lineTo(ocx, ocy + dy);
+        ctx.moveTo(ocx, ocy + dy);                             // go to centre
+        ctx.ellipse(ocx, ocy + dy, rx, ry, 0, startA, endA);  // arc along ellipse
+        ctx.lineTo(ocx, ocy + dy);                             // back to centre
         ctx.closePath();
         ctx.fillStyle = fillStyle;
         ctx.fill();
       }
 
+      // Build a convenience array with each slice's angles, current
+      // animation state, colour, and pull-out offset (ox, oy).
       const slices = meta.data.map((arc, i) => {
         const start = arc.startAngle, end = arc.endAngle;
-        const mid = (start + end) / 2;
-        const st = sliceState[i];
+        const mid = (start + end) / 2;          // midpoint angle of the slice
+        const st = sliceState[i];                // animated {pull, bright}
         const pull = st.pull;
         const bright = st.bright;
+        // If hovered (bright > 0) boost the colour vibrancy
         const col = bright > 0.01 ? boldenColor(colors[i % colors.length], bright) : colors[i % colors.length];
         return { i, start, end, mid, pull, col, bright,
+          // Pull-out offset: move the slice outward along its midpoint angle
           ox: Math.cos(mid) * pull,
-          oy: Math.sin(mid) * pull * TILT };
+          oy: Math.sin(mid) * pull * TILT };     // squash Y to stay in perspective
       });
 
+      // Sort slices so the ones at the BACK of the 3D scene are drawn
+      // first (painter's algorithm). sin(mid) < 0 means "further back".
       const backFirst = [...slices].sort((a,b) => Math.sin(a.mid) - Math.sin(b.mid));
 
-      // --- PASS 1: Draw sides ---
+      // --- PASS 1: Side walls (the "thickness" of the cake) ----------
+      // For each slice we draw a ribbon connecting the top ellipse arc
+      // to the bottom ellipse arc, filled with a very dark shade.
       backFirst.forEach(({i, start, end, ox, oy, col}) => {
-        const dark = shadeDarken(col, 0.35);
+        const dark = shadeDarken(col, 0.35);            // 35% of original colour
         ctx.beginPath();
-        ctx.ellipse(cx + ox, cy + oy, rx, ry, 0, start, end);
-        ctx.lineTo(cx + ox + rx*Math.cos(end), cy + oy + ry*Math.sin(end) + DEPTH);
-        ctx.ellipse(cx + ox, cy + oy + DEPTH, rx, ry, 0, end, start, true);
+        ctx.ellipse(cx + ox, cy + oy, rx, ry, 0, start, end);           // top arc
+        ctx.lineTo(cx + ox + rx*Math.cos(end), cy + oy + ry*Math.sin(end) + DEPTH); // drop down
+        ctx.ellipse(cx + ox, cy + oy + DEPTH, rx, ry, 0, end, start, true);         // bottom arc (reversed)
         ctx.closePath();
         ctx.fillStyle = dark;
         ctx.fill();
-        ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+        ctx.strokeStyle = 'rgba(0,0,0,0.3)';            // subtle dark outline
         ctx.lineWidth = 0.5;
         ctx.stroke();
       });
 
-      // --- PASS 2: Draw bottom face ---
+      // --- PASS 2: Bottom face of the cake -------------------------
+      // A very dark filled ellipse sector at y + DEPTH.
+      // Mostly hidden, but peeks out around the edges for realism.
       backFirst.forEach(({i, start, end, ox, oy, col}) => {
         drawSector(cx + ox, cy + oy, start, end, DEPTH, shadeDarken(col, 0.3));
       });
 
-      // --- PASS 3: Draw top face ---
+      // --- PASS 3: Top face (the visible coloured surface) ---------
       slices.forEach(({i, start, end, mid, ox, oy, col, bright}) => {
+        // Fill the wedge with the slice's colour
         drawSector(cx + ox, cy + oy, start, end, 0, col);
+
+        // Draw a dark separator line between adjacent slices
         ctx.beginPath();
         ctx.moveTo(cx + ox, cy + oy);
         ctx.ellipse(cx + ox, cy + oy, rx, ry, 0, start, end);
@@ -196,24 +291,28 @@ function make3DPie(canvasId, labels, data, colors) {
         ctx.lineWidth = 1.5;
         ctx.stroke();
 
-        // highlight on top face
+        // Subtle white radial gradient — gives a slight "sheen"
+        // on the top face. Intensifies when the slice is hovered.
         const highlightAlpha = 0.08 + bright * 0.06;
         const grad = ctx.createRadialGradient(cx+ox, cy+oy - ry*0.3, 0, cx+ox, cy+oy, rx);
         grad.addColorStop(0, `rgba(255,255,255,${highlightAlpha})`);
         grad.addColorStop(1, 'rgba(255,255,255,0)');
         drawSector(cx + ox, cy + oy, start, end, 0, grad);
 
-        // Labels
+        // ── Category label on the slice ──
+        // Place it at 60 % of the radius along the midpoint angle.
+        // Only draw if the slice spans more than ~0.22 rad (~13°),
+        // otherwise it would overlap with neighbouring labels.
         const labelR = rx * 0.6;
         const lx = cx + ox + Math.cos(mid) * labelR;
         const ly = cy + oy + Math.sin(mid) * labelR * TILT;
-        const span = end - start;
+        const span = end - start;              // arc span in radians
         if (span > 0.22) {
           ctx.fillStyle = '#fff';
           ctx.font = bright > 0.5 ? 'bold 12px sans-serif' : '10px sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.shadowColor = 'rgba(0,0,0,0.7)';
+          ctx.shadowColor = 'rgba(0,0,0,0.7)'; // dark halo for readability
           ctx.shadowBlur = 3;
           ctx.fillText(labels[i], lx, ly);
           ctx.shadowBlur = 0;
@@ -222,46 +321,126 @@ function make3DPie(canvasId, labels, data, colors) {
     }
   };
 
+  // ── Animation loop ───────────────────────────────────────────
+  // Called via requestAnimationFrame. Each frame it nudges every
+  // slice's pull & bright towards their target (PULL / 0 and 1 / 0)
+  // using lerp.  When all slices have reached their target the loop
+  // stops itself (sets animFrame = null) to avoid wasting CPU.
   function animateSlices(chart) {
     let needsUpdate = false;
     sliceState.forEach((st, i) => {
+      // Target: full pull-out + glow if this slice is hovered, else zero
       const targetPull = chart._hoveredIdx === i ? PULL : 0;
       const targetBright = chart._hoveredIdx === i ? 1 : 0;
+      // If we haven't reached the target yet, interpolate one step
       if (Math.abs(st.pull - targetPull) > 0.3 || Math.abs(st.bright - targetBright) > 0.01) {
         st.pull = lerp(st.pull, targetPull, LERP_SPEED);
         st.bright = lerp(st.bright, targetBright, LERP_SPEED);
         needsUpdate = true;
       } else {
+        // Snap to exact target (avoids infinite tiny steps)
         st.pull = targetPull;
         st.bright = targetBright;
       }
     });
     if (needsUpdate) {
-      chart.draw();
+      chart.draw();   // re-render the chart (triggers afterDraw → redraws 3D)
       animFrame = requestAnimationFrame(() => animateSlices(chart));
     } else {
-      animFrame = null;
+      animFrame = null;  // all slices at rest → stop looping
     }
   }
 
+  // Kick off the animation loop (no-op if already running).
   function startAnim(chart) {
     if (!animFrame) animFrame = requestAnimationFrame(() => animateSlices(chart));
   }
 
+  // ── Custom hit-test for the 3D pie ──────────────────────────────
+  // WHY: Chart.js thinks the pie is a perfect circle, but we draw
+  //      it as a squashed ellipse (the "3D tilt"). That mismatch
+  //      makes Chart.js report the wrong slice for small wedges.
+  //      So we do our own geometry check instead.
+  //
+  // HOW IT WORKS (3 steps):
+  //   1. Is the mouse inside the visible ellipse at all?
+  //   2. What angle does the mouse sit at, corrected for the tilt?
+  //   3. Which slice owns that angle?
+  // ────────────────────────────────────────────────────────────────
+  function hitTestPie(chart, mouseX, mouseY) {
+    const geo = chart._pieGeo;           // saved by afterDraw: centre + radii
+    if (!geo) return -1;                 // chart hasn't rendered yet
+    const { cx, cy, rx, ry } = geo;
+    //  cx, cy = centre of the ellipse (pixels)
+    //  rx     = horizontal radius (wide)
+    //  ry     = vertical radius   (squashed by TILT)
+
+    // ① Distance from centre in each axis
+    const dx = mouseX - cx;
+    const dy = mouseY - cy;
+
+    // ② Ellipse boundary test  (standard ellipse equation):
+    //    (dx/rx)² + (dy/ry)²  ≤ 1  means "inside"
+    //    If > 1 the cursor is outside the pie → nothing hovered.
+    if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) > 1) return -1;
+
+    // ③ Figure out which slice the cursor is in.
+    //    The pie was drawn as an ellipse, but the slice *angles*
+    //    in Chart.js are stored as if the pie were a circle.
+    //    To compare apples-to-apples we "un-squash" dy back to
+    //    circular space by dividing by TILT before computing the angle.
+    let angle = Math.atan2(dy / TILT, dx);   // atan2 gives radians –π … π
+
+    // Shift to 0 … 2π so it matches Chart.js's angle range.
+    if (angle < 0) angle += Math.PI * 2;
+
+    // Walk every slice and check if our angle falls between
+    // that slice's startAngle and endAngle.
+    const meta = chart.getDatasetMeta(0);    // array of arc elements
+    for (let i = 0; i < meta.data.length; i++) {
+      let start = meta.data[i].startAngle;
+      let end   = meta.data[i].endAngle;
+
+      // Normalise so start is ≥ 0 (Chart.js may use –π/2 as origin)
+      while (start < 0) { start += Math.PI * 2; end += Math.PI * 2; }
+
+      // Special case: a slice that wraps past the 0°/360° boundary
+      if (end > Math.PI * 2) {
+        if (angle >= start || angle <= end - Math.PI * 2) return i;
+      } else {
+        if (angle >= start && angle <= end) return i;
+      }
+    }
+    return -1;   // shouldn't happen if inside ellipse, but safety net
+  }
+
+  // ── Create the Chart.js instance ────────────────────────────
+  // We use type:'pie' only so Chart.js computes the slice angles
+  // for us. The actual visual rendering is fully handled by our
+  // 'pie3d' plugin above — that's why backgroundColor is set to
+  // 'transparent' (we don't want Chart.js's default flat pie).
   const chart = new Chart(document.getElementById(canvasId), {
     type: 'pie',
     data: {
       labels, datasets: [{
-        data, backgroundColor: 'transparent', borderColor: 'transparent', borderWidth: 0,
-        hoverOffset: 0
+        data,
+        backgroundColor: 'transparent',   // hide Chart.js's own fill
+        borderColor: 'transparent',        // hide Chart.js's own borders
+        borderWidth: 0,
+        hoverOffset: 0                     // no built-in hover pull
       }]
     },
     options: {
-      responsive: true, maintainAspectRatio: false,
+      responsive: true,                    // resize with the container
+      maintainAspectRatio: false,           // fill the height we set in CSS
       animation: { animateRotate: true, duration: 900 },
       plugins: {
-        legend: { display: false },
+        legend: { display: false },         // we build our own legend
         tooltip: {
+          // Disable Chart.js's default tooltip bubble.
+          // The external() callback below is a leftover from before
+          // we switched to fully manual tooltip handling in mousemove.
+          // It can still fire in edge cases so we keep it.
           enabled: false,
           external(context) {
             const tip = document.getElementById('tip');
@@ -276,58 +455,123 @@ function make3DPie(canvasId, labels, data, colors) {
         }
       }
     },
-    plugins: [plugin]
+    plugins: [plugin]   // register our 3D drawing plugin
   });
 
-  document.getElementById(canvasId).addEventListener('mousemove', e => {
-    const pts = chart.getElementsAtEventForMode(e,'nearest',{intersect:true},false);
-    chart._hoveredIdx = pts.length ? pts[0].index : -1;
-    startAnim(chart);
+  // ── Mouse interaction for the pie chart ─────────────────────────
+  // On every mouse move we ask hitTestPie() which slice (if any)
+  // the cursor is over, then:
+  //   • kick the pull-out / glow animation for that slice
+  //   • show or hide the floating tooltip with the slice's data
+  // ────────────────────────────────────────────────────────────────
+  const canvasEl = document.getElementById(canvasId);
+  canvasEl.addEventListener('mousemove', e => {
+    // Convert page-level mouse coords → canvas-local coords
+    const rect = canvasEl.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // Ask our custom function: "which slice index is the cursor in?"
+    // Returns -1 when outside the pie entirely.
+    const idx = hitTestPie(chart, mx, my);
+    // Store which slice is hovered so afterDraw can animate it
+    chart._hoveredIdx = idx;
+    canvasEl.style.cursor = idx >= 0 ? 'pointer' : 'default';
+    startAnim(chart);    // ensure the animation loop is running
+
+    // ── Manual tooltip ──────────────────────────────────────────
+    // We position a simple <div> next to the cursor instead of
+    // relying on Chart.js's built-in tooltip (which uses the
+    // wrong circular geometry for hit detection).
+    const tip = document.getElementById('tip');
+    if (idx >= 0) {
+      const total = data.reduce((a,b)=>a+b,0);
+      // Show: category name (coloured), amount in CZK, percentage
+      tip.innerHTML = `<b style="color:${colors[idx]}">${labels[idx]}</b><br>${data[idx].toLocaleString('cs-CZ')} Kč &nbsp;<span style="color:#888">(${(data[idx]/total*100).toFixed(1)} %)</span>`;
+      tip.style.display = 'block';
+      tip.style.left = (e.clientX + 12) + 'px';   // 12 px right of cursor
+      tip.style.top  = (e.clientY - 10) + 'px';   // 10 px above cursor
+    } else {
+      tip.style.display = 'none';                  // hide when outside pie
+    }
   });
-  document.getElementById(canvasId).addEventListener('mouseleave', () => {
-    chart._hoveredIdx = -1;
-    startAnim(chart);
+
+  // When the mouse leaves the canvas entirely, reset everything.
+  canvasEl.addEventListener('mouseleave', () => {
+    chart._hoveredIdx = -1;                        // no slice hovered
+    startAnim(chart);                              // animate slices back to rest
     document.getElementById('tip').style.display='none';
   });
-  return chart;
+  return chart;   // return the Chart instance in case caller needs it
 }
 
+// =====================================================================
+//  3D BAR CHART
+// =====================================================================
+// Creates a vertical bar chart with a faux-3D "block" effect.
+// Two extra faces are drawn on top of each bar:
+//   • TOP face  — a parallelogram shifted up-right (lighter shade)
+//   • RIGHT face — a side panel shifted right       (darker shade)
+// This gives each bar the look of a solid 3D box viewed from above-left.
+//
+// Parameters: same as make3DPie.
+// ---------------------------------------------------------------------
 function make3DBar(canvasId, labels, data, colors) {
-  const DEPTH = 10, SHIFT = 8;
+  const DEPTH = 10;   // how many px the 3D top face rises
+  const SHIFT = 8;    // how many px the 3D faces shift to the right
+
+  // ── Chart.js plugin: draws 3D faces after the flat bars ──────
   const plugin3d = {
     id: 'bar3d',
     afterDraw(chart) {
       const {ctx} = chart;
-      const meta = chart.getDatasetMeta(0);
+      const meta = chart.getDatasetMeta(0);   // array of BarElement objects
+
       meta.data.forEach((bar, i) => {
+        // x, y      = top-centre of the flat bar
+        // width     = bar width in px
+        // base      = y-coordinate of the bottom of the bar (the x-axis)
         const {x, y, width, base} = bar;
         const col = colors[i % colors.length];
-        const dark = darkenHex(col, 0.45);
-        const med  = darkenHex(col, 0.7);
+        const dark = darkenHex(col, 0.45);     // side face (darkest)
+        const med  = darkenHex(col, 0.7);      // top face  (medium)
         const liftY = 0;
+
         ctx.save();
+
+        // ── Top face (parallelogram) ──
+        // Four corners: top-left of bar, shifted top-left, shifted top-right,
+        // top-right of bar.
         ctx.beginPath();
-        ctx.moveTo(x - width/2, y + liftY);
-        ctx.lineTo(x - width/2 + SHIFT, y - DEPTH + liftY);
-        ctx.lineTo(x + width/2 + SHIFT, y - DEPTH + liftY);
-        ctx.lineTo(x + width/2, y + liftY);
+        ctx.moveTo(x - width/2, y + liftY);                      // bar top-left
+        ctx.lineTo(x - width/2 + SHIFT, y - DEPTH + liftY);      // shifted up-right
+        ctx.lineTo(x + width/2 + SHIFT, y - DEPTH + liftY);      // shifted top-right
+        ctx.lineTo(x + width/2, y + liftY);                      // bar top-right
         ctx.closePath();
         ctx.fillStyle = med; ctx.fill();
+
+        // ── Right-side face ──
+        // Connects the bar's right edge to the shifted right edge.
         ctx.beginPath();
-        ctx.moveTo(x + width/2, y + liftY);
-        ctx.lineTo(x + width/2 + SHIFT, y - DEPTH + liftY);
-        ctx.lineTo(x + width/2 + SHIFT, base - DEPTH);
-        ctx.lineTo(x + width/2, base);
+        ctx.moveTo(x + width/2, y + liftY);                      // bar top-right
+        ctx.lineTo(x + width/2 + SHIFT, y - DEPTH + liftY);      // shifted top-right
+        ctx.lineTo(x + width/2 + SHIFT, base - DEPTH);           // shifted bottom-right
+        ctx.lineTo(x + width/2, base);                           // bar bottom-right
         ctx.closePath();
         ctx.fillStyle = dark; ctx.fill();
+
         ctx.restore();
       });
     }
   };
+
+  // Same idea as shadeDarken in the pie: multiply each channel by `amt`.
   function darkenHex(hex, amt) {
     let c = parseInt(hex.slice(1),16);
     return `rgb(${(((c>>16)&255)*amt)|0},${(((c>>8)&255)*amt)|0},${((c&255)*amt)|0})`;
   }
+
+  // Boost the dominant colour channel for hover highlight.
   function boldenHex(hex) {
     const c = parseInt(hex.slice(1),16);
     let r = (c>>16)&255, g = (c>>8)&255, b = c&255;
@@ -337,21 +581,29 @@ function make3DBar(canvasId, labels, data, colors) {
     b = max===b ? Math.min(255,b+50) : Math.max(0,b-20);
     return `rgb(${r},${g},${b})`;
   }
+  // ── Create the bar Chart.js instance ─────────────────────────
+  // Unlike the pie, here Chart.js handles the actual bar drawing.
+  // Our plugin just adds the 3D top/side faces on top.
   const chart = new Chart(document.getElementById(canvasId), {
     type: 'bar',
     data: {
       labels,
       datasets: [{
-        data, backgroundColor: colors, borderColor: '#111', borderWidth: 1,
-        hoverBackgroundColor: colors.map(c => boldenHex(c)),
-        borderSkipped: false
+        data,
+        backgroundColor: colors,                         // flat bar colour
+        borderColor: '#111',                             // thin dark outline
+        borderWidth: 1,
+        hoverBackgroundColor: colors.map(c => boldenHex(c)), // brighter on hover
+        borderSkipped: false                             // draw border on all sides
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { display: false },
+        legend: { display: false },          // we have our own legend
         tooltip: {
+          // Custom tooltip — same approach as the pie: position a
+          // shared <div id="tip"> next to the cursor.
           enabled: false,
           external(context) {
             const tip = document.getElementById('tip');
@@ -366,30 +618,49 @@ function make3DBar(canvasId, labels, data, colors) {
         }
       },
       scales: {
+        // X axis: category labels, rotated up to 35° if they overlap
         x: { ticks: { color:'#888', font:{size:10}, maxRotation:35 }, grid:{color:'#1e1e1e'} },
+        // Y axis: amounts in CZK, formatted with locale thousands separator
         y: { ticks: { color:'#888', font:{size:10}, callback: v => v.toLocaleString('cs-CZ') }, grid:{color:'#1e1e1e'} }
       }
     },
-    plugins: [plugin3d]
+    plugins: [plugin3d]   // register our 3D faces plugin
   });
+
+  // Pointer cursor when hovering a bar (Chart.js hit-test works
+  // fine for rectangular bars, so no custom logic needed here).
+  document.getElementById(canvasId).addEventListener('mousemove', e => {
+    const pts = chart.getElementsAtEventForMode(e,'nearest',{intersect:true},false);
+    e.target.style.cursor = pts.length ? 'pointer' : 'default';
+  });
+  // Hide tooltip when the mouse leaves the canvas
   document.getElementById(canvasId).addEventListener('mouseleave', () => {
     document.getElementById('tip').style.display='none';
   });
   return chart;
 }
 
-const labels = rawData.map(d=>d.cat);
-const subs   = rawData.map(d=>d.sub);
-const v50    = rawData.map(d=>d.v50);
-const v40    = rawData.map(d=>d.v40);
+// =====================================================================
+//  INITIALISATION
+// =====================================================================
+// Extract parallel arrays from rawData for the chart functions.
+const labels = rawData.map(d=>d.cat);   // category names
+const subs   = rawData.map(d=>d.sub);   // sub-descriptions
+const v50    = rawData.map(d=>d.v50);   // amounts for 50 k variant
+const v40    = rawData.map(d=>d.v40);   // amounts for 40 k variant
 
-make3DPie('pie0', labels, v50, COLORS);
-make3DBar('bar0', labels, v50, COLORS);
+// Build both tabs: each tab gets a 3D pie, a 3D bar, and a legend.
+make3DPie('pie0', labels, v50, COLORS);      // pie  — Varianta 1
+make3DBar('bar0', labels, v50, COLORS);      // bars — Varianta 1
 makeLegend('leg0', labels, v50, COLORS, subs);
-make3DPie('pie1', labels, v40, COLORS);
-make3DBar('bar1', labels, v40, COLORS);
+make3DPie('pie1', labels, v40, COLORS);      // pie  — Varianta 2
+make3DBar('bar1', labels, v40, COLORS);      // bars — Varianta 2
 makeLegend('leg1', labels, v40, COLORS, subs);
 
+// ── Tab switching ────────────────────────────────────────────────
+// Toggles visibility of the two <div class="section"> containers
+// and highlights the active <button class="tab">.
+// Called by the onclick="switchTab(n)" attribute on each tab button.
 function switchTab(n) {
   document.querySelectorAll('.section').forEach((s,i)=>s.classList.toggle('active',i===n));
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',i===n));
